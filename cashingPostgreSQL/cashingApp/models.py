@@ -1,7 +1,7 @@
 from django.db import models
 
-class users(models.Model):
-    userId = models.CharField(max_length=20)
+class UsersNew(models.Model):
+    userId = models.AutoField(primary_key=True)
     userScore = models.IntegerField()
     firstName = models.CharField(max_length=100)
     secondName = models.CharField(max_length=100)
