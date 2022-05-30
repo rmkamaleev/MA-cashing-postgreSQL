@@ -1,0 +1,25 @@
+{
+  "name": "datacachingproject",
+  "version": "1.0.0",
+  "description": "Data caching project",
+  "main": "server.js",
+  "dependencies": {
+    "axios": "^0.27.2",
+    "bcrypt-nodejs": "0.0.3",
+    "express": "^4.18.1",
+    "luxon": "^2.4.0",
+    "moment": "^2.29.3",
+    "moment-random": "^1.1.0",
+    "pg": "^8.7.1",
+    "redis": "^4.1.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "start-caching": "node server.js --caching",
+    "start-analyzis": "node server.js --analyzis",
+    "generate-users": "node ./generate-users/generateUsers.js",
+    "test": "node ./generate-users/test.js"
+  },
+  "author": "",
+  "license": "ISC"
+}
