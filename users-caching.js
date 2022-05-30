@@ -1,7 +1,9 @@
 const redis = require("redis");
+const moment = require("moment");
 const fs = require("fs");
 const { Pool } = require("pg");
 const { CONN_STRING, DB_NAME } = require("./config").db;
+const { NEW_SERVER_LAUNCH_DATE, POSSIBLE_RANGS } = require("./config");
 const {
   USERS_INDEXES_RANGE,
   USERS_INDEXES_RANGE_PROBABILITIES
@@ -9,6 +11,7 @@ const {
 
 const { getIntegerWithTheGivenDistribution, getRandomInt } = require("./generate-users/RNG");
 const { delay } = require("./time");
+const { fileLog, consoleLog } = require("./logger");
 
 const pool = new Pool({ connectionString: CONN_STRING });
 
@@ -17,7 +20,7 @@ const client = redis.createClient();
 async function initRedis() {
   try {
     await client.connect();
-    console.log("Redis connection successfull");
+    consoleLog("Redis connection successfull");
   } catch (ex) {
     console.error(`Redis connection failed: ${ex}`);
   }
@@ -26,7 +29,7 @@ async function initRedis() {
 async function flushRedisDb() {
   try {
     const resFlush = await client.flushDb();
-    console.log("Flushed the redis DB");
+    consoleLog("Flushed the redis DB");
     return resFlush;
   } catch (ex) {
     console.error(`Error occured during the flush of the Redis DB: ${ex}`);
@@ -43,14 +46,15 @@ async function saveUsersDataToCache() {
     const propValueArray = usersDataForCaching.map((user, index) => {
       return [user.id, 
         JSON.stringify({
-          leaderBoardPlace: `#${index+1}`,
-          ...user
+          leaderBoardPlace: index+1,
+          userScore: parseInt(user.userScore),
+          userRang: user.userRang
         })
       ];
     });
 
     await client.mSet(propValueArray);
-    console.log("Saved top 10000 users data to cache");
+    consoleLog("Saved top 10000 users data to cache");
     return "success";
   } catch (ex) {
     console.error(`Error occured during users data saving to the cache: ${ex}`);
@@ -67,7 +71,7 @@ async function saveTopUsersInCache(limit) {
     });
 
     await client.mSet(propValueArray);
-    console.log(`Saved top ${limit} users to cache`);
+    consoleLog(`Saved top ${limit} users to cache`);
     return "success";
   } catch (ex) {
     console.error(`Error occured during top ${limit} users saving to the cache: ${ex}`);
@@ -193,12 +197,12 @@ async function getAllCachedUsersData() {
 
 async function getTopUsers(limit) {
   try {
-    console.log(`Fetching top ${limit} users from DB`);
+    consoleLog(`Fetching top ${limit} users from DB`);
     const startTime = new Date().getTime();
     const queryString = `SELECT * FROM ${DB_NAME} ORDER BY "userScore" DESC LIMIT ${limit}`;
     const result = await pool.query(queryString);
     const diffTime = new Date().getTime() - startTime;
-    console.log("Fetch successfull!");
+    consoleLog("Fetch successfull!");
     return result && result.rowCount
       ? {
           users: result.rows,
@@ -236,7 +240,7 @@ async function getRandomUsers(limit) {
 
 async function changeRandomUsersScore() {
   try {
-    console.log("Changing the userScore of the random users...");
+    consoleLog("Changing the userScore of the random users...");
     const usersData = await getAllCachedUsersData();
     const usersAmount = getRandomInt(500, 1000);
     let userIndex, userScoreChange, newUserScore, userId, operationSign;
@@ -254,13 +258,16 @@ async function changeRandomUsersScore() {
       userScoreChange = getRandomInt(200, 400);
       userIndex = getIntegerWithTheGivenDistribution(USERS_INDEXES_RANGE, USERS_INDEXES_RANGE_PROBABILITIES);
       userId = usersData[userIndex].id;
-      newUserScore = usersData[userIndex].userScore + userScoreChange * (operationSign);
+      newUserScore = parseInt(usersData[userIndex].userScore) + userScoreChange * (operationSign);
       dataToChange.userIds.push(userId);
       dataToChange.userScores.push(newUserScore);
       dataToChange.leaderBoardPlaces.push(userIndex + 1);
       dataToChange.lastLoginDates.push(usersData[userIndex].lastLoginDate);
       dataToChange.loginCountsWeekly.push(usersData[userIndex].loginCountWeekly);
     }
+
+    const usersDataString = dataToChange.userIds.join(",");
+    fs.writeFileSync("changedUsers.txt", usersDataString + ",", { flag: "a" });
 
     const usersDataUpdatePromises = dataToChange.userIds.map((userId, index) => {
       return updateScoreDataOfTheUser(
@@ -273,7 +280,7 @@ async function changeRandomUsersScore() {
     });
 
     await Promise.all(usersDataUpdatePromises);
-    console.log("Users data successfully updated");
+    consoleLog("Users data successfully updated");
   } catch (ex) {
     console.error(`Error occured during the change of the random users score`);
   }
@@ -287,7 +294,7 @@ async function updateScoreDataOfTheUser(
   loginCountWeekly
 ) {
   try {
-    const userRang = calculateUserRang(userScore);
+    const userRang = calculateUserRang(parseInt(userScore));
 
     const queryString = `UPDATE ${DB_NAME} ` + 
       `SET "userScore" = ${userScore}, "userRang" = '${userRang}' ` +
@@ -310,12 +317,13 @@ async function updateScoreDataOfTheUser(
 }
 
 async function asyncDataChange() {
-  console.log("AsyncDataChange procedure started");
+  consoleLog("AsyncDataChange procedure started");
   let iter = 5;
   let awaitTime;
 
   while (iter !== 0) {
-    awaitTime = getRandomInt(3*60, 15*60);
+    awaitTime = getRandomInt(2*60, 4*60);
+    consoleLog(`Await time: ${awaitTime / 60} mins`);
     await delay(awaitTime);
     await changeRandomUsersScore();
     iter--;
@@ -330,7 +338,7 @@ async function cachInvalidationProcedure(
   lastLoginDate,
   loginCountWeekly
 ) {
-  console.log("Cache invalidation procedure started");
+  consoleLog("Cache invalidation procedure started");
   if (
     leaderBoardPlace <= 100 ||
     (leaderBoardPlace > 100 &&
@@ -338,7 +346,7 @@ async function cachInvalidationProcedure(
       loginCountWeekly > 75 &&
       moment(NEW_SERVER_LAUNCH_DATE).isSame(lastLoginDate))
   ) {
-    console.log("Updating cache for user immediately");
+    consoleLog("Updating cache for user immediately");
     await client.set(
       userId,
       JSON.stringify({
@@ -347,7 +355,7 @@ async function cachInvalidationProcedure(
         leaderBoardPlace, // may be invalid, but save it anyway
       })
     );
-    console.log(`Updated cache for user ${userId} with userScore = ${userScore}`);
+    fileLog(`Updated cache for user ${userId} with userScore = ${userScoreOriginal}`);
   } else {
     if (
       leaderBoardPlace > 100 &&
@@ -357,7 +365,7 @@ async function cachInvalidationProcedure(
         (loginCountWeekly > 75 &&
           moment(NEW_SERVER_LAUNCH_DATE).isAfter(lastLoginDate)))
     ) {
-      console.log("Waiting 2 minuntes before the cache update");
+      consoleLog("Waiting 2 minuntes before the cache update");
       await delay(120); // waiting 2 mins before the cache update
     }
 
@@ -367,7 +375,7 @@ async function cachInvalidationProcedure(
       loginCountWeekly < 75 &&
       moment(NEW_SERVER_LAUNCH_DATE).isAfter(lastLoginDate)
     ) {
-      console.log("Waiting 3 minuntes before the cache update");
+      consoleLog("Waiting 3 minuntes before the cache update");
       await delay(180); // waiting 3 mins before the cache update
     }
 
@@ -377,7 +385,7 @@ async function cachInvalidationProcedure(
       loginCountWeekly > 65 &&
       moment(NEW_SERVER_LAUNCH_DATE).isSame(lastLoginDate)
     ) {
-      console.log("Waiting 4 minuntes before the cache update");
+      consoleLog("Waiting 4 minuntes before the cache update");
       await delay(240); // waiting 4 mins before the cache update
     }
 
@@ -391,7 +399,7 @@ async function cachInvalidationProcedure(
             .subtract(1, "days")
             .isSame(lastLoginDate)))
     ) {
-      console.log("Waiting 6 minuntes before the cache update");
+      consoleLog("Waiting 6 minuntes before the cache update");
       await delay(360); // waiting 6 mins before the cache update
     }
 
@@ -407,7 +415,7 @@ async function cachInvalidationProcedure(
             .subtract(2, "days")
             .isSame(lastLoginDate)))
     ) {
-      console.log("Waiting 8 minuntes before the cache update");
+      consoleLog("Waiting 8 minuntes before the cache update");
       await delay(480); // waiting 8 mins before the cache update
     }
 
@@ -423,7 +431,7 @@ async function cachInvalidationProcedure(
             .subtract(1, "days")
             .isSame(lastLoginDate)))
     ) {
-      console.log("Waiting 10 minuntes before the cache update");
+      consoleLog("Waiting 10 minuntes before the cache update");
       await delay(600); // waiting 10 mins before the cache update
     }
 
@@ -439,7 +447,7 @@ async function cachInvalidationProcedure(
             .subtract(1, "days")
             .isSame(lastLoginDate)))
     ) {
-      console.log("Waiting 12 minuntes before the cache update");
+      consoleLog("Waiting 12 minuntes before the cache update");
       await delay(720); // waiting 12 mins before the cache update
     }
 
@@ -455,7 +463,7 @@ async function cachInvalidationProcedure(
             .subtract(3, "days")
             .isSame(lastLoginDate)))
     ) {
-      console.log("Waiting 20 minuntes before the cache update");
+      consoleLog("Waiting 20 minuntes before the cache update");
       await delay(1200); // waiting 20 mins before the cache update
     }
 
@@ -465,7 +473,7 @@ async function cachInvalidationProcedure(
       loginCountWeekly < 57 &&
       moment(NEW_SERVER_LAUNCH_DATE).subtract(3, "days").isSame(lastLoginDate)
     ) {
-      console.log("Waiting 30 minuntes before the cache update");
+      consoleLog("Waiting 30 minuntes before the cache update");
       await delay(1800); // waiting 30 mins before the cache update
     }
 
@@ -478,7 +486,7 @@ async function cachInvalidationProcedure(
         leaderBoardPlace, // may be invalid, but save it anyway
       })
     );
-    console.log(`Updated cache for user ${userId} with userScore = ${userScore}`);
+    fileLog(`Updated cache for user ${userId} with userScore = ${userScore}`);
   }
 }
 
@@ -516,6 +524,78 @@ const getRandomCachedUsersIDs = (limit) => {
   return userIDs;
 }
 
+const checkRangAndScoreDiscrepancies = async () => {
+  try {
+    const userIDsString = fs.readFileSync("changedUsers.txt", "utf-8");
+    const userIDsArray = userIDsString.slice(0, -1).split(",");
+    const userIDsUnique = Array.from(new Set(userIDsArray));
+  
+    const queryString = `SELECT "userScore", "userRang" FROM ${DB_NAME} ` +
+      `WHERE id in (${userIDsUnique.join(",")})`;
+    const updatedUsersDB = await pool.query(queryString);
+  
+    const users = await client.mGet(userIDsUnique);
+    const updatedUsersCache = users.map((user, index) => {
+      let parsed = JSON.parse(user);
+  
+      if (!parsed) {
+        consoleLog(`null for some reason, index: ${index}`);
+        return {
+          id: null,
+          userScore: 0,
+          userRang: "Newbie"
+        }
+      }
+      return parsed;
+    });
+  
+    const discrepanciesUserScore = [];
+    const discrepanciesUserRang = [];
+  
+    updatedUsersDB.rows.forEach((user, index) => {
+      if (user.userScore !== updatedUsersCache[index].userScore) {
+        discrepanciesUserScore.push(
+          Math.abs(user.userScore - updatedUsersCache[index].userScore) /
+          user.userScore
+        );
+        discrepanciesUserRang.push(
+          Math.abs(
+            POSSIBLE_RANGS.indexOf(user.userRang) -
+            POSSIBLE_RANGS.indexOf(updatedUsersCache[index].userRang)
+          )
+        );
+      }
+    })
+  
+    const meanDiscrepancyRang = discrepanciesUserRang.length > 0 &&
+      discrepanciesUserRang.reduce((partialSum, el) => partialSum + el, 0) / discrepanciesUserRang.length;
+  
+    const meanDiscrepancyScore = discrepanciesUserScore.length > 0 &&
+      discrepanciesUserScore.reduce((partialSum, el) => partialSum + el, 0) / discrepanciesUserScore.length;
+  
+    fileLog(`userRang discrepancy: ${meanDiscrepancyRang || 0}`, "discrepancy.log");
+    fileLog(`userScore discrepancy: ${meanDiscrepancyScore || 0}`, "discrepancy.log");
+  } catch (ex) {
+    console.error(`Error occured during the discrepancies calculation: ${ex}`);
+  }
+}
+
+const calculateSavedCalles = () => {
+  try {
+    const allUpdatedUsers = fs.readFileSync("changedUsers.txt", "utf-8");
+    const allUpdatedUsersArray = allUpdatedUsers.slice(0, -1).split(",");
+    const DBUsersUpdateAmount = allUpdatedUsersArray.length;
+  
+    const allUpdatedUsersCacheLogs = fs.readFileSync("logs.log", "utf-8");
+    const loggingDataArray = allUpdatedUsersCacheLogs.split("\n");
+    const CacheUsersUpdateAmount = loggingDataArray.length - 1;
+  
+    fileLog(`Saved calls: ${DBUsersUpdateAmount - CacheUsersUpdateAmount} \n`, "discrepancy.log");
+  } catch (ex) {
+    console.error(`Error occured during the save calls calculation: ${ex}`);
+  }
+}
+
 module.exports = {
   getUserById,
   getTopUsers,
@@ -523,12 +603,15 @@ module.exports = {
   changeRandomUsersScore,
   asyncDataChange,
   calculateUserRang,
-  client,
   initRedis,
   flushRedisDb,
   saveUsersDataToCache,
   saveTopUsersInCache,
   getUserByIdFromCache,
   getTopUsersFromCache,
-  getRandomUsersFromCache
+  getRandomUsersFromCache,
+  fileLog,
+  consoleLog,
+  checkRangAndScoreDiscrepancies,
+  calculateSavedCalles
 };

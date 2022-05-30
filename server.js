@@ -1,5 +1,6 @@
 const path = require("path");
 const express = require("express");
+const fs = require("fs");
 const app = express();
 
 
@@ -15,7 +16,10 @@ const {
   getTopUsersFromCache,
   getRandomUsersFromCache,
   saveUsersDataToCache,
-  saveTopUsersInCache
+  saveTopUsersInCache,
+  consoleLog,
+  checkRangAndScoreDiscrepancies,
+  calculateSavedCalles
 } = require("./users-caching");
 
 
@@ -28,7 +32,7 @@ app.get("/user/:id", async (req, res) => {
   const userCachedData = await getUserByIdFromCache(req.params.id);
 
   if (!userCachedData.user) {
-    console.log("Didn't find data in cache, pullling from DB");
+    consoleLog("Didn't find data in cache, pullling from DB");
     const userFetchData = await getUserById(req.params.id);
     return res.send({ userFetchData });
   }
@@ -86,6 +90,16 @@ app.get("/get-random-users", async (req, res) => {
   res.send({ result });
 });
 
+app.get("/check-discrepancies", async (req, res) => {
+  await checkRangAndScoreDiscrepancies();
+  res.sendStatus(200);
+})
+
+app.get("/check-saved-calls", async (req, res) => {
+  await calculateSavedCalles();
+  res.sendStatus(200);
+})
+
 app.get("/flush-redis-db", async (req, res) => {
   const flushRes = await flushRedisDb();
   res.send({ flushRes });
@@ -93,6 +107,19 @@ app.get("/flush-redis-db", async (req, res) => {
 
 app.listen(5000, async () => {
   await initRedis();
-  asyncDataChange();
-  console.log("Application listening on port 5000!");
+  consoleLog("Application listening on port 5000!");
+
+  const MODE = process.argv.slice(2)[0].split("--")[1];
+
+  if (MODE === "caching") {
+    consoleLog("Launch standard caching mode");
+    fs.writeFileSync("changedUsers.txt", "");
+    fs.writeFileSync("logs.log", "");
+    await saveUsersDataToCache();
+    asyncDataChange();
+  } else {
+    consoleLog("Launch analyzis mode");
+    await checkRangAndScoreDiscrepancies();
+    await calculateSavedCalles();
+  }
 });
